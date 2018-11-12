@@ -4,4 +4,4 @@ Model inspired by experimental work: DE ROISSART, A., WANG, S. & BONTE, D. (2015
 
 Used abbreviations: SPA: mainland-island metapopulation HOM: patchy metapopulation TEM: classical metapopulation
 
-Manuscript available on BioXriv, under revision
+Manuscript available on https://www.biorxiv.org/content/early/2018/05/14/179234
