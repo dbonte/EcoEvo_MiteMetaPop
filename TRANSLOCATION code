@@ -1,0 +1,622 @@
+from random import random, gauss, randint, seed
+from math import sqrt
+from numpy import log
+from numpy import std
+from scipy import stats as scistats
+from numpy import random as numrandom
+
+def mean(collection):
+    """
+    function that calculates the mean of all elements in the collection
+    """
+    return sum(collection)/len(collection)
+
+def gauss_95(mean, sd):
+    """
+    function that returns a random value within the 95% confidence interval of a gaussian 
+    distribution with given mean and sd
+    """
+    value = gauss(mean,sd)
+    while mean-2*sd > value > mean+2*sd:
+        value = gauss(mean,sd)
+    return value
+    
+def var(collection):
+    """
+    function that estimates the population variance of a population following a normal distribution, 
+    assuming the elements in the collection are a random sample from that population
+    """
+    vmean = mean(collection)
+    v_sum = 0
+    for element in collection:
+        v_sum += (vmean - element)**2
+    return v_sum/(len(collection)-1)
+
+class Mite:
+    def __init__(self, number, metapop, patchnr, resource, population, MeanFec, MeanSR, DispInt, MeanJM, 
+                 TTM, TTF, Long, mean_resource_use_juv_early, mean_resource_use_juv_late, mean_resource_use_mature, 
+                 AAM, age=0, sex_male=None):
+        self.number = number
+        self.metapop = metapop # metapopulation to which the mite belongs
+        self.patchnr = patchnr # number of the patch where the mite is located
+        self.population = population # list of all mites in the population
+        self.age = age # age of the mite (in days)
+        self.MeanSR = MeanSR # mean sex ratio of the metapopulation
+        self.MeanFec = MeanFec # mean fecundity (reproductive rate) of the metapopulation
+        self.DispInt = DispInt # dispersal_intercept, determining the probability of dispersal under well-fed conditions 
+        self.MeanJM = MeanJM # mean juvenile mortality
+        self.TTM = TTM # time to maturity for males
+        self.TTF = TTF # time to maturity for female
+        self.Long = Long # longevity, here as the probability to die
+        self.resource = resource # resources for feeding activity
+        self.mean_resource_use_juv_early = mean_resource_use_juv_early
+        self.mean_resource_use_juv_late = mean_resource_use_juv_late
+        self.mean_resource_use_mature = mean_resource_use_mature
+        ### determine the sex ratio of the population using experimental data
+        SexRatio = gauss_95(self.MeanSR,0.04)
+        ### determine the sex of the mite (if not specified before)
+        if sex_male == None:
+            if random() < SexRatio:
+                self.sex_male = True
+            else: 
+                self.sex_male = False          
+        else: 
+            self.sex_male = sex_male
+        ### determine the sex specific AAM (Age at maturity) using experimental data
+        if AAM == None:        
+            if self.sex_male == True: 
+                self.AAM = gauss_95(self.TTM,0.43)   
+            else: 
+                self.AAM = gauss_95(self.TTF,0.46)
+        else: self.AAM = AAM
+       
+        
+    def feedingactivity(self, mean_resource_use_juv_early, mean_resource_use_juv_late, mean_resource_use_mature):
+        """
+        method to determine the feeding activity (self.resource) of the mites based on their age, 
+        and whether they are mature or not
+        """
+        if 4 > self.age > 2 : # the first 2 days there no is resource use (the eggs haven't hatched)
+            self.resource[0] -= gauss_95(mean_resource_use_juv_early, 0.33*mean_resource_use_juv_early) #0.33 is the coefficient of variation
+        elif self.age >= 4 and self.age < self.AAM : #juveniles
+            self.resource[0] -= gauss_95(mean_resource_use_juv_late, 0.33*mean_resource_use_juv_late) #0.33 is the coefficient of variation
+        elif (self.age >= self.AAM) and (self.sex_male == False) : # mature females
+            self.resource[0] -= gauss_95(mean_resource_use_mature, 0.33*mean_resource_use_mature) #0.33 is the coefficient of variation
+        # males do not feed
+        
+    def aging(self):
+        """
+        method used to length the age of the mite with 1 day
+        """
+        self.age += 1
+        
+    def death(self):
+        """
+        method used to let the mite die (individual is removed from self.population)
+        """
+        self.population[self.number] = "died"  
+        
+    def live(self,wind,resource_treshold,slope,DispInt):     
+        """
+        method describing the life of the mite
+        """ 
+        ### change the resources (subtracting the amount eaten by the mite from the resources)
+        if self.resource[0] < 1:
+            self.resource[0] = 1
+        Mite.feedingactivity(self, self.mean_resource_use_juv_early, self.mean_resource_use_juv_late, 
+                             self.mean_resource_use_mature)
+        
+        ### let the mite age with one day
+        Mite.aging(self)
+        
+        ### determine probability of mortality regarding the resources available
+        ### we implement changes here directly 0.5 implies half; 0.9 means 90* of the reference
+        ### STARVATIONRESISTANCE of 1 is the references
+        ###ADJUST IN TITLE LINE 620
+        
+        STARVATIONRESISTANCE=1      
+        
+        if self.resource[0] == 1:
+            DailyPmort = 1*STARVATIONRESISTANCE
+        # eggs die when almost no resources (no leaf)
+        elif (self.age < 2) and (self.resource[0] < resource_treshold): #1500
+            DailyPmort = 1*STARVATIONRESISTANCE
+        # juvenile mites   
+        elif (self.age <= self.AAM) and (self.resource[0] >= resource_treshold):
+            DailyPmort = gauss_95(self.MeanJM,0.003)
+        elif (self.age <= self.AAM) and (self.resource[0] < resource_treshold):    
+            DailyPmort = 0.99*STARVATIONRESISTANCE
+        #mature mites    
+        elif (self.age > self.AAM) and (self.resource[0] > resource_treshold):
+            DailyPmort = self.Long
+        elif (self.age > self.AAM) and (self.resource[0] <= resource_treshold):    
+            DailyPmort = 0.37*STARVATIONRESISTANCE     
+        
+        ### determine whether the mite disperses and if so whether it survives the dispersal
+        #### mortality during dispersal, only 5% survives
+        DispMort = 0.95 
+        #### dispersal probability: relation based on experimental data
+        if self.resource[0] < resource_treshold:
+            Pdisp = 0
+        else:
+            Pdisp = DispInt + slope * log(self.resource[0])  
+        
+        #### check whether the individual is going to disperse or not
+        if (wind == True) and ((self.age > self.AAM and self.age <= self.AAM+2) 
+                               and (self.sex_male == False) and (random() < Pdisp)): 
+            disperse = True
+        else: 
+            disperse = False   
+        #### if the mite disperses, test whether it survives, change status to death if not       
+        if disperse == True:
+            if random() > DispMort: 
+                self.metapop.add_disperser(self.age,self.AAM,self.sex_male)## the surviving mites are added to the list of dispersed mites
+            Mite.death(self)
+            
+                    
+        ### if the mite doesn't disperse test whether it survived based on daily mortality
+        else: # disperse == false
+            if random() > DailyPmort:
+                pass                    
+            else: 
+                Mite.death(self)
+           
+    def reproduction(self):
+        """
+        method used to let the mites reproduce
+        """
+        # only females, already 2 days mature, and still enough resources available
+        if (self.sex_male == False) and (self.age > (self.AAM+2)) and (self.resource[0] > 1000): 
+            Daily_number_of_eggs = int(gauss_95(self.MeanFec,1.48)) #based on experimental data
+            for _ in range(Daily_number_of_eggs):
+                #Create a new individual
+                offspring = [Mite(len(self.population), self.metapop, self.patchnr, self.resource, 
+                                  self.population, self.MeanFec, self.MeanSR, self.DispInt, self.MeanJM, self.TTM, 
+                                  self.TTF, self.Long, self.mean_resource_use_juv_early, self.mean_resource_use_juv_late,
+                                  self.mean_resource_use_mature, self.AAM
+                                  )
+                             ]        
+                self.population.extend(offspring)
+
+    def FemaleAgeCheck(self):
+        """
+        method returns a boolean indicating whether the female is mature or not
+        """
+        return ((self.sex_male == False) and (self.age >= self.AAM))
+
+class Patch:    
+    def __init__(self, landscape, patchnr, patches, startpop, MeanFec, MeanSR, DispInt, MeanJM, TTM, TTF, Long, slope,
+                 resource_treshold, mean_resource_use_juv_early, mean_resource_use_juv_late, mean_resource_use_mature, 
+                 resource=500):
+        
+        self.population = []
+        self.metapop = landscape 
+        self.patchnr = patchnr      
+        self.patches = patches
+        self.startpop = startpop # determines size of the start population in the patch
+        self.resource = [resource]
+        self.MeanSR = MeanSR
+        self.MeanFec = MeanFec
+        self.DispInt = DispInt
+        self.MeanJM = MeanJM
+        self.TTM = TTM
+        self.TTF = TTF
+        self.Long = Long
+        self.slope = slope
+        self.resource_treshold = resource_treshold
+        self.mean_resource_use_juv_early = mean_resource_use_juv_early
+        self.mean_resource_use_juv_late = mean_resource_use_juv_late
+        self.mean_resource_use_mature = mean_resource_use_mature
+        ### give the startpopulation its structure
+        Patch.initialise_mites(self)
+        
+    def initialise_mites(self):
+        """
+        method to create a start population (self.population) for every individual an age is determined
+        """
+        
+        for number in range(self.startpop):
+            age=randint(3,11)
+            self.population.append(Mite(number, self.metapop, self.patchnr, self.resource, self.population,
+                                        self.MeanFec, self.MeanSR, self.DispInt, self.MeanJM, self.TTM, self.TTF, self.Long,
+                                        self.mean_resource_use_juv_early, self.mean_resource_use_juv_late, 
+                                        self.mean_resource_use_mature, None, age
+                                        )
+                                   )    
+                  
+    def patchresources(self, scenario):
+        """
+        resource refreshing method for the different scenarios
+        1) for "HOM" scenario: the resources grow with 5000
+        2) for "TEM" scenario: some resources grow with 5000, others with 1000, others not,
+           leafsize of different patches changes as well
+        3) for "SPA" scenario: 3 standard leaf size, 3 double sized their position in the landscape is fixed
+        """
+   
+        #### 1) for a homogeneous metapopulation configuration (HOM)
+        if scenario == "HOM":
+            self.resource[0] += 5000
+
+        #### 2) for spatiotemporal heterogeneous metapopulation configuration (TEM) - 9 patches temporally changing in size and thus resources
+        elif scenario == "TEM":
+            RandomNumber = random()
+            if RandomNumber < (1/3.0):
+                self.resource[0] += 10000
+            elif RandomNumber < (2/3.0):
+                self.resource[0] += 5000
+ 
+        #### 3)for spatial heterogeneous metapopulation configuration (SPA) - 6 patches (3 standard leaf size, 3 double sized):       
+        elif scenario == "SPA":
+            if self.patchnr >= 3: 
+                self.resource[0] += 10000   
+            else:
+                self.resource[0] += 5000
+        
+    def populationdynamics(self,wind):
+        """
+        method describing population dynamics
+        """ 
+        if self.resource[0] < 0: 
+            self.resource[0] = 0   
+        
+        ### every individual in the population is processed by the function live, mites can die stay or migrate (migrants can die or survive)
+        for mite in self.population:  
+            #print(self.Long)
+            mite.live(wind,self.resource_treshold,self.slope,self.DispInt) #dying and dispersing mites are removed
+        self.population = [mite for mite in self.population if mite != "died"]
+        # now the number of the mite (self.number) in the self.population has to change
+        for index, mite in enumerate(self.population):
+            mite.number = index
+            mite.population = self.population
+        
+                
+        ### give the staying individuals the opportunity to reproduce
+        oldpop = self.population[:]
+        if self.resource[0] > 0:
+            for c in oldpop:
+                c.reproduction()
+            
+    def immigrate(self,age,AAM,sex):
+        '''
+        When an individual disperses into this patch it gets added to the population
+        '''
+        self.population.append(Mite(len(self.population), self.metapop, self.patchnr, self.resource, 
+                                    self.population, self.MeanFec, self.MeanSR, self.DispInt, self.MeanJM, self.TTM, 
+                                    self.TTF, self.Long, self.mean_resource_use_juv_early, self.mean_resource_use_juv_late, 
+                                    self.mean_resource_use_mature, AAM, age, sex
+                                    )
+                               )
+        
+    def femalecount(self):
+        """
+        returns the number of mature females in the population
+        """
+        t=0
+        for mite in self.population:
+            if mite.FemaleAgeCheck():
+                t += 1
+        return t
+
+class Landscape:  
+    def __init__(self, scenario, startpatches, startpop, MeanFec, MeanSR, DispInt, MeanJM, TTM, TTF, Long, slope, 
+                 resource_treshold, mean_resource_use_juv_early, mean_resource_use_juv_late, mean_resource_use_mature, maxtime):
+        self.patches = []
+        self.dispersers = []
+        self.startpatches = startpatches
+        self.startpop = startpop
+        self.MeanSR = MeanSR
+        self.MeanFec = MeanFec
+        self.DispInt = DispInt
+        self.MeanJM = MeanJM
+        self.TTM = TTM
+        self.TTF = TTF
+        self.Long = Long
+        self.disperserList = [[] for _ in range(startpatches)]
+        self.outputlists = []
+        self.scenario = scenario
+        self.slope = slope
+        self.resource_treshold = resource_treshold
+        self.mean_resource_use_juv_early = mean_resource_use_juv_early
+        self.mean_resource_use_juv_late = mean_resource_use_juv_late
+        self.mean_resource_use_mature = mean_resource_use_mature
+        ### initialise the patches in the landscape
+        Landscape.initialize_patches(self)
+        ### create an outputlist consisting of startpatches empty lists (the lists will contain the nr of females in that patch for all days)
+        for _ in range(self.startpatches):
+            self.outputlists.append([])
+        self.time_list = []
+        self.maxtime = maxtime
+    
+    def timelist(self):
+        """
+        method used to create a modified output list of list in which every list represent the patches in a day
+        """
+        self.time_list = [[patch[time] for patch in self.outputlists]for time in range(self.maxtime)]
+        
+    def initialize_patches(self):
+        """
+        method to generate a list of (startpatches) patches (objects of Patch class) each with a startpop 
+        """
+        for i in range (self.startpatches):
+            self.patches.append(Patch(self, i, self.patches, self.startpop, self.MeanFec, self.MeanSR, self.DispInt, 
+                                      self.MeanJM, self.TTM, self.TTF, self.Long, self.slope, self.resource_treshold,
+                                      self.mean_resource_use_juv_early, self.mean_resource_use_juv_late, 
+                                      self.mean_resource_use_mature
+                                      )
+                                )             
+    
+    def patchdynamics(self,wind):
+        """ 
+        function used to:
+        1) add the number of females at the outputlist (in the sublist of that patch, position in that list reflects time)
+        2) and simulate the day in every population
+        """
+        ### 1) counting the number of mature females and ad it to the outputlist
+        patchnr = 0
+        for p in self.patches:
+            numberfemales = p.femalecount()
+            self.outputlists[patchnr].append(numberfemales) #or len(p.population)
+            patchnr += 1
+            
+        ### 2) simulate the day 
+        #### disappearing mites by death and migration, and new mites by birth (new immigrants are not yet incorporated) 
+        for i, p in enumerate(self.patches):
+            p.populationdynamics(wind)
+        self.disperserList[i].append(str(len(self.dispersers)))
+        #### let the dispersers (that survived) migrate towards their new patches
+        for d in range(len(self.dispersers)):
+            random_patch = randint(0,(len(self.patches)-1))
+            self.patches[random_patch].immigrate(self.dispersers[d][0],self.dispersers[d][1],self.dispersers[d][2])
+        del self.dispersers[:] #make the list empty
+           
+    def refreshing(self):
+        """
+        refreshment method, every patch is refreshed
+        """
+        for p in self.patches:
+            p.patchresources(self.scenario)
+    
+    def add_disperser(self,age,AAM,sex):
+        """
+        The dispersers of all patches in one generation are collected in this list
+        """
+        disperser = [age,AAM,sex]
+        self.dispersers.append(disperser)
+        
+    def alfavar(self):
+        """
+        method used to calculate the alfa variability
+        """
+        sd = 0
+        a_mean = 0
+        for poplin in self.outputlists:
+            sd += sqrt(var(poplin[-300:]))
+            a_mean += mean(poplin[-300:])
+        if a_mean == 0:
+            return None
+        else:
+            return (sd/a_mean)**2
+        
+        
+    def DDpop(self):
+        """
+        method used to regress the population growth rate on the population size
+        """
+        x = self.pop_growth_rate()
+        pop_size_list = []
+        for pop_lin in self.outputlists:
+            pop_size_list += pop_lin[:self.maxtime - 1]
+        y = pop_size_list
+        for i,r in enumerate(x):
+            if r == None:
+                y[i] = None
+        y = [i for i in y if i != None][-300:]
+        x = [i for i in x if i != None][-300:]
+        return scistats.linregress(x,y)
+        
+    def DDmetapop(self):
+        """
+        method used to regress the metapopulation-size-growth rate and the metapopulation-size
+        """
+        x = self.metapop_growth_rate()
+        y = self.metapop_size()[1:]
+        for i,r in enumerate(x):
+            if r == None:
+                y[i] = None
+        x = [i for i in x if i != None][-300:]
+        y = [i for i in y if i != None][-300:]
+        return scistats.linregress(x,y)
+        
+    def DDDisp(self): 
+        """
+        method used to regress the number of disperser on the population size
+        """
+        dispersal_list = []
+        for pop_lin_disp in self.disperserList:
+            dispersal_list += pop_lin_disp
+        x = [float(i) for i in dispersal_list][-300:]
+        y = self.metapop_size()[-300:]
+        return scistats.linregress(x,y)
+        
+    def metapop_size(self):
+        """
+        method used to generate a list of the metapopulation sizes over time
+        """
+        metapop_size_list = []
+        for metapop in self.time_list: 
+            metapop_size = 0
+            for pop in metapop:
+                metapop_size += pop
+            metapop_size_list.append(metapop_size)
+        return metapop_size_list
+    
+    def metapop_growth_rate(self):
+        """
+        method used to generate a list of the population growth rate
+        """
+        metapop_size_list = self.metapop_size()
+        #### calculate the growth rate and add it to the list
+        metapop_growth_rate_list = []
+        for i in range(self.maxtime - 1):
+                if metapop_size_list[i] != 0 and metapop_size_list[i+1] != 0:
+                    growth = log(metapop_size_list[i+1]/metapop_size_list[i])
+                else:
+                    growth = None
+                metapop_growth_rate_list.append(growth)
+        return metapop_growth_rate_list
+    
+    def pop_growth_rate(self):
+        """
+        method used to generate a list of list indicating the population growth rate of a specific patch 
+        """
+        pop_growth_list = []
+        for pop_lin in self.outputlists: 
+            pop_growth_list_loc = []
+            for i in range(self.maxtime -1):
+                if pop_lin[i] != 0 and pop_lin[i+1] != 0:
+                    growth = log(pop_lin[i+1]/pop_lin[i])
+                else:
+                    growth = None
+                pop_growth_list_loc.append(growth)
+            pop_growth_list += pop_growth_list_loc
+        return pop_growth_list
+    
+    def extinction_chance(self):
+        """
+        returns the chance of extinction in a patch based upon the last 300 days of the simulation
+        """ 
+        extinct = 0
+        for metapop in self.time_list[-300:]:
+            for pop in metapop:
+                if pop == 0:
+                    extinct += 1
+        return extinct/(300*self.startpatches)
+    
+    def mean_metapop_size(self):
+        """
+        method used to calculate the mean metapopulation size over time for the last 300 days
+        """
+        return sum(self.metapop_size()[-300:])/300
+        
+        
+    def sd_metapop_size(self):
+        """
+        method used to calculate the mean metapopulation size over time for the last 300 days
+        """
+        return std(self.metapop_size()[-300:])
+        
+        
+    def mean_pop_size(self):
+        """
+        method used to calculate the mean population size over time for the last 300 days
+        """
+        mean_pop = [mean(pop) for pop in self.time_list[-300:]]
+        return mean(mean_pop)
+
+class Simulation:
+    def __init__(self, scenario, startpop, maxtime, mitetype):
+        self.wind = None
+        self.startpatches = 9
+        self.maxtime = maxtime # number of days the simulation has to cover
+        self.startpop = startpop # indicates the population size in every of the patches at the start of the simulation
+        self.scenario = scenario
+        self.mitetype = mitetype
+        
+        ### set scenario independent parameters 
+        self.slope = 0.122 #numrandom.uniform(0.061, 0.183) # center = 0.122
+        self.resource_treshold = 1509.1724698393336 #numrandom.uniform(750, 2250) # center = 1500
+        self.mean_resource_use_juv_early = 0.3160 #numrandom.uniform(0.15, 0.45) # center = 0.3
+        self.mean_resource_use_juv_late = 0.6160 #numrandom.uniform(0.25, 0.75) # center = 0.5
+        self.mean_resource_use_mature = 4.1280 #numrandom.uniform(2, 6) # center = 4
+        
+        ### set scenario dependent parameters
+        if scenario == "SPA":
+            self.startpatches = 6 # in this scenario only 6 startpatches
+                  
+        Simulation.start(self, self.mitetype)
+            
+    def start(self, mitetype):
+        """
+        method to run the simulation: 
+        1) a landscape is generated
+        2) run the simulation day per day
+        3) generate output
+        """
+        ### 1) generating the landscape
+        #### SCE: number, metapop, patchnr, resource, population, MeanFec,MeanSR,DispInt,MeanJM,TTM,TTF,Long, age, mean_resource_use_juv_early, mean_resource_use_juv_late , mean_resource_use_mature, AAM = none, age
+        #### HOM: number, self.metapop, self.patchnr, self.resource, self.population, 4.31, 0.26, 0.7, 0.1234, 7.94, 8.25, 0.10 , self.mean_resource_use_juv_early, self.mean_resource_use_juv_late, self.mean_resource_use_mature, None, age
+        #### SPA: number, self.metapop, self.patchnr, self.resource, self.population, 5.41, 0.34, 0.58, 0.1563, 8.21, 8.58, 0.11 , self.mean_resource_use_juv_early, self.mean_resource_use_juv_late, self.mean_resource_use_mature, None, age
+        #### TEM: number, self.metapop, self.patchnr, self.resource, self.population, 5.59, 0.28, 0.7, 0.1236, 7.98, 8.31, 0.14, self.mean_resource_use_juv_early, self.mean_resource_use_juv_late, self.mean_resource_use_mature, None, age 
+        
+        #### first a landscape of patches is generated
+        if mitetype == "HOM":
+            self.MeanFec, self.MeanSR, self.DispInt, self.MeanJM, self.TTM, self.TTF, self.Long = 4.31, 0.26, 0.7, 0.1234, 7.94, 8.25, 0.10 
+        elif mitetype == "SPA":
+            self.MeanFec, self.MeanSR, self.DispInt, self.MeanJM, self.TTM, self.TTF, self.Long = 5.41, 0.34, 0.58, 0.1563, 8.21, 8.58, 0.11
+        elif mitetype == "TEM":
+            self.MeanFec, self.MeanSR, self.DispInt, self.MeanJM, self.TTM, self.TTF, self.Long = 5.59, 0.28, 0.7, 0.1236, 7.98, 8.31, 0.14
+        self.landscape = Landscape(self.scenario, self.startpatches, self.startpop, self.MeanFec, self.MeanSR, self.DispInt, 
+                                   self.MeanJM, self.TTM, self.TTF, self.Long, self.slope, self.resource_treshold, 
+                                   self.mean_resource_use_juv_early, self.mean_resource_use_juv_late, 
+                                   self.mean_resource_use_mature, self.maxtime
+                                   )
+        seed() 
+
+        
+        ### 2) run the simulation day after day
+        for t in range(self.maxtime):
+        #### test whether its a day of wind (allowing dispersal) or not
+            if (t+1)%3 == 0:
+                self.wind = True
+            else: 
+                self.wind = False
+        #### allow dispersal, death and bird
+            self.landscape.patchdynamics(self.wind)
+        #### provide new resources after a week   
+            if (t+1)%7 == 0 : 
+                self.landscape.refreshing() 
+                
+        ### 3) generate output
+        #### make the timelist
+        self.landscape.timelist()      
+        gammavar=((self.landscape.sd_metapop_size())/(self.landscape.mean_metapop_size()))**2
+        
+        if self.landscape.mean_metapop_size() <10:
+            return None
+        else:
+            betavar=gammavar/self.landscape.alfavar()
+        
+        ### 4) generate output file
+        if self.landscape.alfavar() != None and gammavar != None and betavar != None:
+            DDpop_slope, DDpop_intercept = self.landscape.DDpop()[:2]
+            DDmetapop_slope, DDmetapop_intercept = self.landscape.DDmetapop()[:2]
+            DDDisp_slope, DDDisp_intercept = self.landscape.DDDisp()[:2]
+            title = "newgamma's_metapop{}mite_in{}0523.txt".format(mitetype, self.scenario)
+            outfile = open(title, 'a')
+            text = "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}".format(self.MeanFec, self.MeanSR, self.DispInt, 
+                                                                                           self.MeanJM, self.TTM, self.TTF, self.Long, 
+                                                                                           self.slope, self.resource_treshold, 
+                                                                                           self.mean_resource_use_juv_early,
+                                                                                           self.mean_resource_use_juv_late, 
+                                                                                           self.mean_resource_use_mature, 
+                                                                                           self.landscape.alfavar(), gammavar, betavar,
+                                                                                           DDpop_slope, 
+                                                                                           DDpop_intercept, DDmetapop_slope, DDmetapop_intercept, 
+                                                                                           DDDisp_slope, DDDisp_intercept, 
+                                                                                           self.landscape.mean_pop_size(), 
+                                                                                           self.landscape.mean_metapop_size(),
+                                                                                           self.landscape.extinction_chance()
+                                                                                           )
+            #outfile.write(text + "\n")
+            print(text)
+            outfile.close()
+        else:
+            pass
+        
+
+
+if __name__ == '__main__':                
+    for _ in range(1):
+        #simulation = Simulation(scenario = "HOM", startpop=100, maxtime=1200, mitetype="SPA")
+        simulation = Simulation(scenario = "HOM", startpop=100, maxtime=1200, mitetype="HOM")
+#simulation = Simulation(scenario = "HOM", startpop=100, maxtime=1200, mitetype="TEM")
